@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"strings"
 )
 
 type LineReader interface {
@@ -21,6 +22,7 @@ var (
 	outputFile  = flag.String("o", "", "/path/to/output.json (optional; default is stdout)")
 	verbose     = flag.Bool("v", false, "verbose output (to stderr)")
 	showVersion = flag.Bool("version", false, "print version string")
+	printHeader = flag.Bool("p", false, "Prints header to output")
 	keys        = StringArray{}
 )
 
@@ -41,8 +43,8 @@ func main() {
 	if *inputFile != "" {
 		file, err := os.OpenFile(*inputFile, os.O_RDONLY, 0600)
 		if err != nil {
-			log.Printf("Error %s opening %v", err, *inputFile)
-			return
+			log.Printf("Error %s opening input file %v", err, *inputFile)
+			os.Exit(1)
 		}
 		reader = bufio.NewReader(file)
 	} else {
@@ -52,19 +54,49 @@ func main() {
 	if *outputFile != "" {
 		file, err := os.OpenFile(*outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
-			log.Printf("Error %s opening outputFile %v", err, *outputFile)
+			log.Printf("Error %s opening output file %v", err, *outputFile)
+			os.Exit(1)
 		}
 		writer = csv.NewWriter(file)
 	} else {
 		writer = csv.NewWriter(os.Stdout)
 	}
 
-	json2csv(reader, writer, keys)
+	json2csv(reader, writer, keys, *printHeader)
 }
 
-func json2csv(r LineReader, w *csv.Writer, keys []string) {
+func get_value(data map[string]interface{}, keyparts []string) string {
+	if len(keyparts) > 1 {
+		subdata, _ := data[keyparts[0]].(map[string]interface{})
+		return get_value(subdata, keyparts[1:])
+	} else if v, ok := data[keyparts[0]]; ok {
+		switch v.(type) {
+		case nil:
+			return ""
+		case float64:
+			f, _ := v.(float64)
+			if math.Mod(f, 1.0) == 0.0 {
+				return fmt.Sprintf("%d", int(f))
+			} else {
+				return fmt.Sprintf("%f", f)
+			}
+		default:
+			return fmt.Sprintf("%+v", v)
+		}
+	}
+
+	return ""
+}
+
+func json2csv(r LineReader, w *csv.Writer, keys []string, printHeader bool) {
 	var line []byte
 	var err error
+
+	var expanded_keys [][]string
+	for _, key := range keys {
+		expanded_keys = append(expanded_keys, strings.Split(key, "."))
+	}
+
 	for {
 		if err == io.EOF {
 			return
@@ -80,32 +112,24 @@ func json2csv(r LineReader, w *csv.Writer, keys []string) {
 			continue
 		}
 
+		if printHeader {
+			w.Write(keys)
+			w.Flush()
+			printHeader = false
+		}
+
 		var data map[string]interface{}
 		err = json.Unmarshal(line, &data)
 		if err != nil {
 			log.Printf("ERROR Json Decoding: %s - %v", err, line)
 			continue
 		}
+
 		var record []string
-		for _, key := range keys {
-			if v, ok := data[key]; ok {
-				switch v.(type) {
-				case nil:
-					record = append(record, "")
-				case float64:
-					f, _ := v.(float64)
-					if math.Mod(f, 1.0) == 0.0 {
-						record = append(record, fmt.Sprintf("%d", int(f)))
-					} else {
-						record = append(record, fmt.Sprintf("%f", f))
-					}
-				default:
-					record = append(record, fmt.Sprintf("%+v", v))
-				}
-			} else {
-				record = append(record, "")
-			}
+		for _, expanded_key := range expanded_keys {
+			record = append(record, get_value(data, expanded_key))
 		}
+
 		w.Write(record)
 		w.Flush()
 	}
